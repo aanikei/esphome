@@ -54,7 +54,7 @@ void SEVSEG2::disable_display() {
   ESP_LOGD(TAG, "SEVSEG2: timer disabled");
 }
 
-void HOT SEVSEG2::timer_interrupt() {
+void IRAM_ATTR HOT SEVSEG2::timer_interrupt() {
   static uint8_t anti_ghosting = 0;
 
   static uint8_t activeDigit = 0;
@@ -76,7 +76,7 @@ void HOT SEVSEG2::timer_interrupt() {
   if (anti_ghosting == 0) {
     ++anti_ghosting;
 
-    // digit_pins_[activeDigit]->digital_write(true);
+    digit_pins_[activeDigit]->digital_write(true);
 
     uint32_t scaledBrightness1 = (digit_brightness_[activeDigit] * display_brightness_ * 128) >> 16;
     uint32_t scaledBrightness2 = (digit_brightness_[activeDigit2] * display_brightness_ * 128) >> 16;
