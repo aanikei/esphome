@@ -4,6 +4,10 @@
 #include "esphome/core/helpers.h"
 #include "esphome/core/log.h"
 
+#include "esphome/core/component.h"
+#include "esphome/core/application.h"
+#include <hal/gpio_hal.h>
+
 #ifdef USE_ESP32_FRAMEWORK_ARDUINO
 #include <esp32-hal-timer.h>
 #endif
@@ -19,16 +23,18 @@ static hw_timer_t *display_timer = nullptr;  // NOLINT(cppcoreguidelines-avoid-n
 void IRAM_ATTR HOT SEVSEG2::s_timer_intr() { timer_interrupt(); }
 #endif
 
+void SEVSEG2::setup() { SEVSEGX::setup(); }
+
 void SEVSEG2::enable_display() {
 #ifdef USE_ESP32
   if (display_timer == NULL) {
     display_timer = timerBegin(1000000);
     timerAttachInterrupt(display_timer, &SEVSEG2::s_timer_intr);
-    timerAlarm(display_timer, 30, true, 0);
+    timerAlarm(display_timer, 20, true, 0);
     is_enabled = true;
   }
 #endif
-  ESP_LOGCONFIG(TAG, "SEVSEG2: enabled");
+  ESP_LOGI(TAG, "SEVSEG2: enabled");
 }
 
 void SEVSEG2::disable_display() {
@@ -51,98 +57,192 @@ void SEVSEG2::disable_display() {
     }
   }
 
-  ESP_LOGD(TAG, "SEVSEG2: timer disabled");
+  ESP_LOGI(TAG, "SEVSEG2: timer disabled");
 }
 
+uint8_t SEVSEG2::half_buffer_size = buffer_size_ >> 1;
+
+uint8_t anti_ghosting = 0;
+uint8_t active_digit = 0;
+uint8_t active_digit2 = SEVSEG2::half_buffer_size;
+// 'pwm_counter' runs independently, simulating a PWM cycle (0 to 127).
+uint8_t pwm_counter = 0;
+uint8_t pwm_counter2 = 0;
+
+uint8_t ch;
+uint8_t segments;
+uint8_t ch2;
+uint8_t segments2;
+
+uint32_t scaled_brightness1;
+uint32_t scaled_brightness2;
+
+bool state1;
+bool state2;
+
+uint8_t anti_ghosting_ticks = 2;  // configurable blanking ticks
+uint8_t blanking_counter = 0;     // runtime blanking state
+
 void IRAM_ATTR HOT SEVSEG2::timer_interrupt() {
-  static uint8_t anti_ghosting = 0;
+  uint32_t mask_low = 0UL;
+  uint32_t mask_high = 0UL;
 
-  static uint8_t activeDigit = 0;
-  static uint8_t activeDigit2 = buffer_size_ >> 1;
+  if (blanking_counter > 0) {
+    // Blanking phase: turn off all segments
+    blanking_counter--;
 
-  // 'pwmCounter' runs independently, simulating a PWM cycle (0 to 127).
-  static uint8_t pwmCounter = 0;
-  static uint8_t pwmCounter2 = 0;
+    GPIO.out_w1tc = 0xFFFFFFFFUL;
+    GPIO.out1_w1tc.val = 0xFFFFFFFFUL;
+    return;
+  }
 
   // Load the character for the currently active digit.
-  uint8_t ch = buffer_[activeDigit];
-  // uint8_t segments = (ch < 128) ? SEVSEG_ASCII_TO_RAW[ch] : SEVSEG_ASCII_TO_RAW[127];
-  uint8_t segments = SEVSEG_ASCII_TO_RAW[ch];
+  ch = buffer_[active_digit];
+  ch2 = buffer_[active_digit2];
 
-  uint8_t ch2 = buffer_[activeDigit2];
-  // uint8_t segments2 = (ch2 < 128) ? SEVSEG_ASCII_TO_RAW[ch2] : SEVSEG_ASCII_TO_RAW[127];
-  uint8_t segments2 = SEVSEG_ASCII_TO_RAW[ch2];
+  segments = (ch < 128) ? SEVSEG_ASCII_TO_RAW[ch] : SEVSEG_ASCII_TO_RAW[127];
+  segments2 = (ch2 < 128) ? SEVSEG_ASCII_TO_RAW[ch2] : SEVSEG_ASCII_TO_RAW[127];
 
-  if (anti_ghosting == 0) {
-    ++anti_ghosting;
+  // Brightness PWM
+  scaled_brightness1 = (digit_brightness_[active_digit] * display_brightness_ * 64) >> 16;
+  scaled_brightness2 = (digit_brightness_[active_digit2] * display_brightness_ * 64) >> 16;
 
-    digit_pins_[activeDigit]->digital_write(true);
+  state1 = pwm_counter < scaled_brightness1;
+  state2 = pwm_counter2 < scaled_brightness2;
 
-    uint32_t scaledBrightness1 = (digit_brightness_[activeDigit] * display_brightness_ * 128) >> 16;
-    uint32_t scaledBrightness2 = (digit_brightness_[activeDigit2] * display_brightness_ * 128) >> 16;
+  uint8_t pin;
 
-    bool state1 = pwmCounter < scaledBrightness1;
-    bool state2 = pwmCounter2 < scaledBrightness2;
+  pin = digit_pin_nums_[active_digit];
+  pin < 32 ? mask_low |= (1UL << pin) : mask_high |= (1UL << (pin - 32));
 
-    segment_pins_[1][7]->digital_write(state2 && ((segments2 & 0b10000000) || digit_dots_[activeDigit2]));
-    segment_pins_[0][7]->digital_write(state1 && ((segments & 0b10000000) || digit_dots_[activeDigit]));
-    segment_pins_[1][4]->digital_write(state2 && (segments2 & 0b00000100));
-    segment_pins_[0][4]->digital_write(state1 && (segments & 0b00000100));
-    segment_pins_[1][5]->digital_write(state2 && (segments2 & 0b00000010));
-    segment_pins_[0][5]->digital_write(state1 && (segments & 0b00000010));
-    segment_pins_[1][3]->digital_write(state2 && (segments2 & 0b00001000));
-    segment_pins_[0][3]->digital_write(state1 && (segments & 0b00001000));
-    segment_pins_[1][6]->digital_write(state2 && (segments2 & 0b00000001));
-    segment_pins_[0][6]->digital_write(state1 && (segments & 0b00000001));
-    segment_pins_[1][0]->digital_write(state2 && (segments2 & 0b01000000));
-    segment_pins_[0][0]->digital_write(state1 && (segments & 0b01000000));
-    segment_pins_[1][1]->digital_write(state2 && (segments2 & 0b00100000));
-    segment_pins_[0][1]->digital_write(state1 && (segments & 0b00100000));
-    segment_pins_[1][2]->digital_write(state2 && (segments2 & 0b00010000));
-    segment_pins_[0][2]->digital_write(state1 && (segments & 0b00010000));
-
-  } else {
-    --anti_ghosting;
-
-    segment_pins_[1][7]->digital_write(false);
-    segment_pins_[0][7]->digital_write(false);
-    segment_pins_[1][4]->digital_write(false);
-    segment_pins_[0][4]->digital_write(false);
-    segment_pins_[1][5]->digital_write(false);
-    segment_pins_[0][5]->digital_write(false);
-    segment_pins_[1][3]->digital_write(false);
-    segment_pins_[0][3]->digital_write(false);
-    segment_pins_[1][6]->digital_write(false);
-    segment_pins_[0][6]->digital_write(false);
-    segment_pins_[1][0]->digital_write(false);
-    segment_pins_[0][0]->digital_write(false);
-    segment_pins_[1][1]->digital_write(false);
-    segment_pins_[0][1]->digital_write(false);
-    segment_pins_[1][2]->digital_write(false);
-    segment_pins_[0][2]->digital_write(false);
-
-    digit_pins_[activeDigit]->digital_write(false);
-
-    if ((buffer_size_ >> 1) - 1 > activeDigit) {
-      ++activeDigit;
-      ++activeDigit2;
-    } else {
-      activeDigit = 0;
-      activeDigit2 = buffer_size_ >> 1;
-    }
-
-    // Advance the PWM counter (range 0-127). Using bit masking for efficiency.
-    pwmCounter = (pwmCounter + 1) & 127;
-    pwmCounter2 = (pwmCounter2 + 1) & 127;
+  pin = segment_pin_nums_[0][0];
+  if (pin != 255) {
+    if (state1 && (segments & 0b01000000))
+      pin < 32 ? mask_low |= (1UL << pin) : mask_high |= (1UL << (pin - 32));
   }
-  // 'activeDigit' is used to cycle through the digits for multiplexing.
+
+  pin = segment_pin_nums_[0][1];
+  if (pin != 255) {
+    if (state1 && (segments & 0b00100000))
+      pin < 32 ? mask_low |= (1UL << pin) : mask_high |= (1UL << (pin - 32));
+  }
+
+  pin = segment_pin_nums_[0][2];
+  if (pin != 255) {
+    if (state1 && (segments & 0b00010000))
+      pin < 32 ? mask_low |= (1UL << pin) : mask_high |= (1UL << (pin - 32));
+  }
+
+  pin = segment_pin_nums_[0][3];
+  if (pin != 255) {
+    if (state1 && (segments & 0b00001000))
+      pin < 32 ? mask_low |= (1UL << pin) : mask_high |= (1UL << (pin - 32));
+  }
+
+  pin = segment_pin_nums_[0][4];
+  if (pin != 255) {
+    if (state1 && (segments & 0b00000100))
+      pin < 32 ? mask_low |= (1UL << pin) : mask_high |= (1UL << (pin - 32));
+  }
+
+  pin = segment_pin_nums_[0][5];
+  if (pin != 255) {
+    if (state1 && (segments & 0b00000010))
+      pin < 32 ? mask_low |= (1UL << pin) : mask_high |= (1UL << (pin - 32));
+  }
+
+  pin = segment_pin_nums_[0][6];
+  if (pin != 255) {
+    if (state1 && (segments & 0b00000001))
+      pin < 32 ? mask_low |= (1UL << pin) : mask_high |= (1UL << (pin - 32));
+  }
+
+  pin = segment_pin_nums_[0][7];
+  if (pin != 255) {
+    if (state1 && ((segments & 0b10000000) || digit_dots_[active_digit])) {
+      pin < 32 ? mask_low |= (1UL << pin) : mask_high |= (1UL << (pin - 32));
+    }
+  }
+
+  pin = segment_pin_nums_[1][0];
+  if (pin != 255) {
+    if (state2 && (segments2 & 0b01000000))
+      pin < 32 ? mask_low |= (1UL << pin) : mask_high |= (1UL << (pin - 32));
+  }
+
+  pin = segment_pin_nums_[1][1];
+  if (pin != 255) {
+    if (state2 && (segments2 & 0b00100000))
+      pin < 32 ? mask_low |= (1UL << pin) : mask_high |= (1UL << (pin - 32));
+  }
+
+  pin = segment_pin_nums_[1][2];
+  if (pin != 255) {
+    if (state2 && (segments2 & 0b00010000))
+      pin < 32 ? mask_low |= (1UL << pin) : mask_high |= (1UL << (pin - 32));
+  }
+
+  pin = segment_pin_nums_[1][3];
+  if (pin != 255) {
+    if (state2 && (segments2 & 0b00001000))
+      pin < 32 ? mask_low |= (1UL << pin) : mask_high |= (1UL << (pin - 32));
+  }
+
+  pin = segment_pin_nums_[1][4];
+  if (pin != 255) {
+    if (state2 && (segments2 & 0b00000100))
+      pin < 32 ? mask_low |= (1UL << pin) : mask_high |= (1UL << (pin - 32));
+  }
+
+  pin = segment_pin_nums_[1][5];
+  if (pin != 255) {
+    if (state2 && (segments2 & 0b00000010))
+      pin < 32 ? mask_low |= (1UL << pin) : mask_high |= (1UL << (pin - 32));
+  }
+
+  pin = segment_pin_nums_[1][6];
+  if (pin != 255) {
+    if (state2 && (segments2 & 0b00000001))
+      pin < 32 ? mask_low |= (1UL << pin) : mask_high |= (1UL << (pin - 32));
+  }
+
+  pin = segment_pin_nums_[1][7];
+  if (pin != 255) {
+    if (state2 && ((segments2 & 0b10000000) || digit_dots_[active_digit2])) {
+      pin < 32 ? mask_low |= (1UL << pin) : mask_high |= (1UL << (pin - 32));
+    }
+  }
+
+  // Apply masks
+  GPIO.out_w1ts = mask_low;   // Set bins
+  GPIO.out_w1tc = ~mask_low;  // Clear bits
+
+  GPIO.out1_w1ts.val = mask_high;
+  GPIO.out1_w1tc.val = ~mask_high;
+
+  // Advance digit every full PWM cycle
+  pwm_counter = (pwm_counter + 1) & 63;
+  pwm_counter2 = (pwm_counter2 + 1) & 63;
+
+  if (pwm_counter == 0) {
+    // Start blanking phase before switching digits
+    blanking_counter = anti_ghosting_ticks;
+
+    if ((buffer_size_ >> 1) - 1 > active_digit) {
+      ++active_digit;
+      ++active_digit2;
+    } else {
+      active_digit = 0;
+      active_digit2 = buffer_size_ >> 1;
+    }
+  }
 }
 
 // print functions
 void SEVSEG2::print(const char *str) {
   if (is_enabled) {
     //>> 1 == dividee by 2
-    for (int i = 0; i < (buffer_size_ >> 1); i++) {
+    for (int i = 0; i < (buffer_size_ >> 1); i++) {  // half_buffer_size
       uint8_t data1 = (uint8_t) str[buffer_size_ - 1 - i];
       if (data1 >= 0 && data1 < 128) {
         buffer_[i] = data1;

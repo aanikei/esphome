@@ -7,6 +7,7 @@ CONF_SEGMENT_PINS = "segment_pins"
 CONF_DIGIT_PINS = "digit_pins"
 CONF_DIGIT_BRIGHTNESS = "digit_brightness"
 CONF_DISPLAY_BRIGHTNESS = "display_brightness"
+MULTI_CONF = False
 
 sevsegx_base_ns = cg.esphome_ns.namespace("sevsegx_base")
 SEVSEGX = sevsegx_base_ns.class_("SEVSEGX", cg.Component)

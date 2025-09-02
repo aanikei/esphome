@@ -43,8 +43,10 @@ class SEVSEGX : public Component {
   static const size_t MAX_SEGMENTS = 8;
   static const size_t MAX_SECTIONS = 2;
   static std::array<std::array<GPIOPin *, MAX_SEGMENTS>, MAX_SECTIONS> segment_pins_;
+  static std::array<std::array<uint8_t, MAX_SEGMENTS>, MAX_SECTIONS> segment_pin_nums_;
 
   static std::vector<GPIOPin *> digit_pins_;
+  static std::vector<uint8_t> digit_pin_nums_;
   static std::vector<uint8_t> digit_brightness_;
   static std::vector<uint8_t> digit_dots_;
   static uint8_t display_brightness_;

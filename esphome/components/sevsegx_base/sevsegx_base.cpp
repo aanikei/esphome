@@ -11,7 +11,7 @@ static const char *const TAG = "sevsegx";
 
 static const uint8_t SEVENSEG_UNKNOWN_CHAR = 0b00000000;
 
-const uint8_t SEVSEGX::SEVSEG_ASCII_TO_RAW[128] PROGMEM = {
+const uint8_t SEVSEGX::SEVSEG_ASCII_TO_RAW[128] = {
     SEVENSEG_UNKNOWN_CHAR,  // 0x00
     SEVENSEG_UNKNOWN_CHAR,  // 0x01
     SEVENSEG_UNKNOWN_CHAR,  // 0x02
@@ -143,7 +143,9 @@ const uint8_t SEVSEGX::SEVSEG_ASCII_TO_RAW[128] PROGMEM = {
 };
 
 std::array<std::array<GPIOPin *, SEVSEGX::MAX_SEGMENTS>, SEVSEGX::MAX_SECTIONS> SEVSEGX::segment_pins_;
+std::array<std::array<uint8_t, SEVSEGX::MAX_SEGMENTS>, SEVSEGX::MAX_SECTIONS> SEVSEGX::segment_pin_nums_;
 std::vector<GPIOPin *> SEVSEGX::digit_pins_;
+std::vector<uint8_t> SEVSEGX::digit_pin_nums_;
 std::vector<uint8_t> SEVSEGX::digit_brightness_;
 std::vector<uint8_t> SEVSEGX::digit_dots_;
 uint8_t SEVSEGX::display_brightness_;
@@ -160,11 +162,13 @@ void SEVSEGX::set_segment_pins(std::vector<std::vector<GPIOPin *>> segment_pins)
     for (size_t seg = 0; seg < MAX_SEGMENTS; ++seg) {
       if (sec < segment_pins.size() && seg < segment_pins[sec].size()) {
         segment_pins_[sec][seg] = segment_pins[sec][seg];
+        segment_pin_nums_[sec][seg] = ((InternalGPIOPin *) segment_pins_[sec][seg])->get_pin();
+
         ESP_LOGCONFIG(TAG, "Setting up segment pins: section %d, segment %d, GPIO %s", sec, seg,
                       segment_pins_[sec][seg]->dump_summary().c_str());
-
       } else {
         segment_pins_[sec][seg] = nullptr;
+        segment_pin_nums_[sec][seg] = 255;
       }
     }
   }
@@ -172,6 +176,9 @@ void SEVSEGX::set_segment_pins(std::vector<std::vector<GPIOPin *>> segment_pins)
 
 void SEVSEGX::set_digit_pins(std::vector<GPIOPin *> digit_pins) {
   digit_pins_.assign(digit_pins.begin(), digit_pins.end());
+  for (size_t i = 0; i < digit_pins_.size(); ++i) {
+    digit_pin_nums_.push_back(((InternalGPIOPin *) digit_pins_[i])->get_pin());
+  }
   // set up dots at the same time
   std::vector<uint8_t> v(digit_pins.size(), 0);
   digit_dots_.assign(v.begin(), v.end());
@@ -225,11 +232,7 @@ void SEVSEGX::dump_config() {
   ESP_LOGCONFIG(TAG, "Setup Complete: %s", this->setup_complete_ ? "YES" : "NO");
 }
 
-void SEVSEGX::print(std::string str) {
-  std::vector<uint8_t> dots_0(digit_pins_.size(), 0);
-  set_digit_dots(dots_0);
-  return this->print(str.c_str());
-}
+void SEVSEGX::print(std::string str) { return this->print(str.c_str()); }
 
 void SEVSEGX::strftime(const char *format, ESPTime time) {
   if (is_enabled) {

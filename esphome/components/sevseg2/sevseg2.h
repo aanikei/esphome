@@ -11,11 +11,13 @@ namespace sevseg2 {
 
 class SEVSEG2 : public sevsegx_base::SEVSEGX {
  public:
-  void setup() override { SEVSEGX::setup(); }
+  void setup() override;
   void disable_display() override;
   void enable_display() override;
   void print(const char *str) override;
   using SEVSEGX::print;
+
+  static uint8_t half_buffer_size;
 
  protected:
   static void timer_interrupt();
